@@ -7,8 +7,9 @@ controller to coordinate movement and device actions.
 from farmbot_controllers.devices import DeviceControl
 from farmbot_controllers.movement import Movement
 
-from farmbot_interfaces.srv import StringRepReq
+from farmbot_interfaces.srv import ReadNpk, StringRepReq
 
+from rclpy.duration import Duration
 from rclpy.node import Node
 
 from std_msgs.msg import Bool, String
@@ -24,6 +25,9 @@ class WaitForRequest:
         self.result = -1
         self.expected = -1
         self.index = -1
+        # A sync read only waits for the reply; its value is not checked
+        self.sync = False
+        self.done_tag = ''
 
 
 class Sequencer:
@@ -56,12 +60,20 @@ class Sequencer:
         self.wait_for_camera = False
         self.general_wait_flag = False
         self.ticks = 0
+        # Blocks the sequence while the NPK probe is being read
+        self.wait_for_npk = False
+        self.npk_deadline = None
+        self.npk_timeout_s = 120.0
 
         self.estop_sub = self.node.create_subscription(Bool, 'estop',
                                                        self.status_callback, 10)
         self.sequencer_sub = self.node.create_subscription(String, 'sequencer',
                                                            self.extend_sequence, 10)
         self.sequencing_timer_ = self.node.create_timer(1.0, self.sequencing_timer)
+        # Reports 'DONE <tag>' when a SEQDONE line is reached, after every command queued
+        # before it has been executed by the Farmduino
+        self.state_pub = self.node.create_publisher(String, 'sequencer_state', 10)
+        self.npk_client = self.node.create_client(ReadNpk, 'npk/read')
 
     def clear_sequence(self):
         """Clear the sequence in cases such as an electronic stop."""
@@ -168,6 +180,12 @@ class Sequencer:
             self.ticks -= 1
             return
 
+        if self.wait_for_npk:
+            if self.node.get_clock().now() < self.npk_deadline:
+                return
+            self.node.get_logger().warn('NPK read timed out, continuing without it')
+            self.wait_for_npk = False
+
         if self.wait_for_camera or self.general_wait_flag:
             return
         if not len(self.sequence):
@@ -269,6 +287,17 @@ class Sequencer:
                 if cmd[0] == 'P4_Pulses':
                     if int(cmd[1]):
                         self.peripheral4_pulses(delay=int(cmd[1]))
+                # Wait until every command queued before this one has been executed. The pin
+                # read is queued behind them, so its reply only arrives once they are done
+                if cmd[0] in ('SYNC', 'SEQDONE'):
+                    self.devices.read_pin(63, False)
+                    self.wait_for_request.wait_flag = True
+                    self.wait_for_request.wait_for = 63
+                    self.wait_for_request.sync = True
+                    self.wait_for_request.done_tag = (
+                        (cmd[1] if len(cmd) > 1 else 'sequence') if cmd[0] == 'SEQDONE' else '')
+                if cmd[0] == 'READNPK':
+                    self.read_npk(index=int(cmd[1]))
                 self.sequence.pop(0)
             # Handle Vision Commands
             elif self.command_type == 'VC':
@@ -301,8 +330,55 @@ class Sequencer:
         if ' ' in msg:
             info = msg.split(' ')
             if info[0] == 'R41' and info[1] == f'P{str(self.wait_for_request.wait_for)}':
+                if self.wait_for_request.sync:
+                    # Handled here rather than on the next tick, because a SEQDONE is usually
+                    # the last line and the timer stops processing once the queue is empty
+                    tag = self.wait_for_request.done_tag
+                    if tag:
+                        self.state_pub.publish(String(data=f'DONE {tag}'))
+                    self.wait_for_request = WaitForRequest()
+                    return
                 self.wait_for_request.result = int(info[2][1:])
                 self.wait_for_request.wait_flag = False
+
+    def read_npk(self, index: int):
+        """
+        Read the NPK probe for a plant and store the reading on it in the map.
+
+        The probe node powers the probe, waits for it to settle and reads it, so this blocks the
+        sequence until the reading comes back or npk_timeout_s passes.
+        """
+        if not self.npk_client.service_is_ready():
+            self.node.get_logger().warn(f'NPK probe service not available, plant {index} '
+                                        'not read')
+            return
+
+        request = ReadNpk.Request()
+        request.plant_index = index
+        request.warmup_s = 0.0  # use the probe node's configured warm-up
+
+        self.wait_for_npk = True
+        self.npk_deadline = (self.node.get_clock().now()
+                             + Duration(seconds=self.npk_timeout_s))
+        future = self.npk_client.call_async(request)
+        future.add_done_callback(lambda f: self.npk_callback(f, index))
+
+    def npk_callback(self, future, index: int):
+        """Forward a successful NPK reading to the map handler and release the sequence."""
+        self.wait_for_npk = False
+        try:
+            response = future.result()
+        except Exception as e:
+            self.node.get_logger().error(f'NPK read for plant {index} failed: {e!r}')
+            return
+        if not response.success:
+            self.node.get_logger().warn(f'NPK read for plant {index} invalid: '
+                                        f'{response.reading.status}')
+            return
+        r = response.reading
+        self.map_cmd_client(cmd=(f'NpkReading {index} {r.moisture_pct} {r.soil_temp_c} '
+                                 f'{r.ec_us_cm} {r.ph} {r.nitrogen_mg_kg} '
+                                 f'{r.phosphorus_mg_kg} {r.potassium_mg_kg}'))
 
     def macro_client(self, topic: str, info: str):
         """Use to implement experimental features."""

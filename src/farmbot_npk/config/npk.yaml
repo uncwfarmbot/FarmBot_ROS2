@@ -1,0 +1,23 @@
+# Parameters for the NPK probe node (farmbot_npk/npk_node)
+npk_probe:
+  ros__parameters:
+    # USB-RS485 adapter. Use the udev alias from etc/99-farmbot-npk.rules: /dev/ttyUSB0 moves
+    # when another serial device enumerates first. /dev/ttyACM0 is the Farmduino, never this.
+    port: /dev/farmbot_npk
+    baudrate: 9600            # factory default; probe_cli --scan finds it if changed
+    slave_address: 1
+    timeout: 1.0
+    retries: 2
+
+    # Probe power through Peripheral 4 (pin 10), switched with P4_1/P4_0 on input_topic.
+    # Set manage_power false if the probe is wired straight to a supply.
+    manage_power: true
+    # Settling after power-on, measured on this probe:
+    #   2 s -> moisture 27.5 pH 8.06, 10 s -> 30.3 / 7.87, 20 s -> 30.8 / 7.77 (settled)
+    warmup_s: 20.0
+    samples: 3                # median of these is reported
+    sample_interval_s: 1.0
+    max_on_s: 90.0            # watchdog: Peripheral 4 is switched off after this long
+
+    mock: false
+    frame_id: npk_probe

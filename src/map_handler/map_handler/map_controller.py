@@ -5,6 +5,7 @@ Manages and persists Farmbot map information including dimensions, tool location
 tray positions, and plant data. Provides services for map modifications and queries.
 """
 import copy
+import datetime
 import math
 import os
 
@@ -89,6 +90,15 @@ class MapController(Node):
         self.tray_16_ref = self.load_from_yaml(self.directory, tray_16_ref_file)
         # Loading the watering thresholds
         self.watering_thresholds = self.load_from_yaml(self.directory, 'watering_threshold.yaml')
+        # NPK probe survey and controller action settings
+        self.soil_probe = self.load_from_yaml(self.directory, 'soil_probe.yaml')
+        # map_info commands used by the NPK probe and the crop controllers
+        self.soil_commands = {
+            'NpkReading': self.set_npk_reading,           # store a probe reading on a plant
+            'P_10': lambda args: self.npk_survey(),        # NPK survey of every plant
+            'P_11': self.apply_actions,                    # apply per-plant water/nitrogen
+            'P_LIST': lambda args: self.list_plants(),     # read-only dump of the plants
+        }
 
         # MapCommand subscriber
         self.map_cmd_sub = self.create_subscription(MapCommand,
@@ -190,7 +200,11 @@ class MapController(Node):
         self.plant_ref['plant_details']['canopy_radius'] = canopy_radius
         self.plant_ref['plant_details']['max_height'] = max_z
         self.plant_ref['plant_details']['soil_moisture'] = 0.0
+        self.plant_ref['plant_details']['water_quantity'] = water_quantity
         self.plant_ref['status']['growth_stage'] = growth_stage
+        today = datetime.date.today()
+        self.plant_ref['status']['plant_date'] = {'day': today.day, 'month': today.month,
+                                                  'year': today.year}
 
         index = self.map_instance['plant_details']['plant_count'] + 1
         self.plant_ref['identifiers']['index'] = copy.deepcopy(index)
@@ -212,6 +226,7 @@ class MapController(Node):
         if index in plants:
             del plants[index]
             self.reindex_plants()
+            self.map_instance['plant_details']['plant_count'] = len(plants)
             self.save_to_yaml(self.map_instance, self.config_path, self.active_map_file)
 
             self.get_logger().info(f'Removed plant with index {index}')
@@ -220,15 +235,15 @@ class MapController(Node):
 
     def reindex_plants(self):
         """Reindex all the plants after the removal of one in the list."""
-        index = 1
-        plants = self.map_instance['plant_details']['plants']
-        for plant_index in plants:
-            if int(plant_index) != index:
-                plants[index] = plants.pop(plant_index)
-                plant = plants[index]
-                plant['identifiers']['index'] = copy.deepcopy(index)
-
-            index += 1
+        # Rebuilt rather than re-keyed in place: popping keys while iterating the same dict
+        # raises RuntimeError
+        plants = self.map_instance['plant_details']['plants'] or {}
+        reindexed = {}
+        for index, plant_index in enumerate(sorted(plants, key=int), start=1):
+            plant = plants[plant_index]
+            plant['identifiers']['index'] = index
+            reindexed[index] = plant
+        self.map_instance['plant_details']['plants'] = reindexed
 
     def seed_plants(self):
         """
@@ -273,7 +288,7 @@ class MapController(Node):
 
     def __check_loaded_seeds(self, seed_type: str):
         """Check if there is a tray with the seed type loaded in it."""
-        trays = self.map_instance['map_reference']['trays']
+        trays = self.map_instance['map_reference']['trays'] or {}
         # self.get_logger().info(str(trays))
         for tray_index in trays:
             tray = trays[tray_index]
@@ -303,7 +318,7 @@ class MapController(Node):
 
         cmd = f"CC_P_{plant['identifiers']['index']}_3\n"
         # Go over seed tray
-        cmd += f'{tray_x} {tray_y} {0.0}\n"'
+        cmd += f'{tray_x} {tray_y} {0.0}\n'
         # Go over seed tray at safe z
         cmd += f'{tray_x} {tray_y} {tray_z + self.safe_z_increment_}\n'
         # Turn on vacuum pump
@@ -341,6 +356,9 @@ class MapController(Node):
         if cmd_split[0] == 'SoilReading':
             response.data = self.set_soil_moisture(index=int(cmd_split[1]),
                                                    reading=int(cmd_split[2]))
+            return response
+        elif cmd_split[0] in self.soil_commands:
+            response.data = self.soil_commands[cmd_split[0]](cmd_split[1:])
             return response
         elif cmd_type == 'T':
             response.data = self.tool_cmd_interpreter(request.data)
@@ -385,13 +403,18 @@ class MapController(Node):
 
             # Get hte probing location
             index = plant['identifiers']['index']
-            x, y = self.get_probing_location(plants=plants,
-                                             x=plant['position']['x'],
-                                             y=plant['position']['y'],
-                                             exl_r=plant['plant_details']['plant_radius'],
-                                             max_x=max_x,
-                                             max_y=max_y,
-                                             index=index)
+            location = self.get_probing_location(plants=plants,
+                                                 x=plant['position']['x'],
+                                                 y=plant['position']['y'],
+                                                 exl_r=plant['plant_details']['plant_radius'],
+                                                 max_x=max_x,
+                                                 max_y=max_y,
+                                                 index=index)
+            if location is None:
+                self.get_logger().warn(f'No free probing location around plant {index}, '
+                                       'skipped')
+                continue
+            x, y = location
 
             # Set coordinate command
             sequence += 'CC_P_5\n'
@@ -413,6 +436,203 @@ class MapController(Node):
         sequence += f'{0.0} {0.0} {0.0}'
 
         return sequence
+
+    def npk_survey(self) -> str:
+        """
+        Generate the sequence that reads the NPK probe beside every plant.
+
+        The probe tool is mounted first when the map has a tool of that name, and unmounted at
+        the end. Each reading waits on SYNC so the gantry has actually arrived before the probe
+        is powered and read, since coordinate lines are dispatched without waiting for the move.
+        """
+        plants = self.map_instance['plant_details']['plants'] or {}
+        if not plants:
+            self.get_logger().warn('No plants found to survey!')
+            return 'FAILED'
+
+        max_x = self.map_instance['map_reference']['x_len']
+        max_y = self.map_instance['map_reference']['y_len']
+        probe_z = self.soil_probe['probe_z']
+        if probe_z is None:
+            probe_z = (-1.0) * self.map_instance['map_reference']['z_len']
+
+        mount, unmount = self.tool_sequences(self.soil_probe['npk_tool_name'])
+        sequence = mount
+        for plant_index in plants:
+            plant = plants[plant_index]
+            index = plant['identifiers']['index']
+            location = self.get_probing_location(plants=plants,
+                                                 x=plant['position']['x'],
+                                                 y=plant['position']['y'],
+                                                 exl_r=plant['plant_details']['plant_radius'],
+                                                 max_x=max_x,
+                                                 max_y=max_y,
+                                                 index=index)
+            if location is None:
+                self.get_logger().warn(f'No free probing location around plant {index}, '
+                                       'skipped')
+                continue
+            x, y = location
+
+            sequence += f'CC_NPK_{index}\n'
+            sequence += f'{x} {y} {0.0}\n'
+            sequence += f'{x} {y} {probe_z}\n'
+            sequence += f'DC_NPK_{index}\n'
+            sequence += 'SYNC\n'
+            sequence += f'READNPK {index}\n'
+            sequence += f'CC_NPK_{index}\n'
+            sequence += f'{x} {y} {0.0}\n'
+
+        sequence += unmount
+        sequence += 'DC_NPK\nSEQDONE survey'
+        return sequence
+
+    def apply_actions(self, actions: list) -> str:
+        """
+        Generate the sequence that applies a controller's per-plant decisions.
+
+        Args:
+            actions: entries of the form 'index:water_ms:granules'. Water goes on as timed pump
+                pulses over the plant. Nitrogen goes on as granules picked from the tray whose
+                seed type is the configured nitrogen type, using the seeder and its vacuum.
+        """
+        plants = self.map_instance['plant_details']['plants'] or {}
+        parsed = []
+        for action in actions:
+            try:
+                index, water_ms, granules = action.split(':')
+                parsed.append((int(index), int(water_ms), int(granules)))
+            except ValueError:
+                self.get_logger().warn(f"Malformed action '{action}' ignored")
+        parsed = [a for a in parsed if a[0] in plants]
+
+        sequence = ''
+        for index, water_ms, _ in parsed:
+            if water_ms > 0:
+                sequence += self.water_plant_ms(plants[index], water_ms)
+
+        fertilize = [(index, granules) for index, _, granules in parsed if granules > 0]
+        if fertilize:
+            available, tray_index = self.__check_loaded_seeds(
+                self.soil_probe['nitrogen_seed_type'])
+            if not available:
+                self.get_logger().warn('Nitrogen requested but no tray is loaded with '
+                                       f"'{self.soil_probe['nitrogen_seed_type']}'. "
+                                       'Nitrogen skipped')
+            else:
+                tray = self.map_instance['map_reference']['trays'][tray_index]
+                mount, unmount = self.tool_sequences(self.soil_probe['seeder_tool_name'])
+                sequence += mount
+                for index, granules in fertilize:
+                    for _ in range(granules):
+                        sequence += self.place_granule(plants[index], tray)
+                sequence += unmount
+
+        sequence += 'DC_APPLY\nSEQDONE apply'
+        return sequence
+
+    def water_plant_ms(self, plant: dict, water_ms: int) -> str:
+        """Create the sequence for watering a single plant for a total pump time in ms."""
+        max_pulse = int(self.soil_probe['max_pulse_ms'])
+        index = plant['identifiers']['index']
+        cmd = f'CC_W_{index}\n'
+        cmd += f"{plant['position']['x']} {plant['position']['y']} {0.0}\n"
+        cmd += f'DC_W_{index}\n'
+        remaining = water_ms
+        while remaining > 0:
+            pulse = min(max_pulse, remaining)
+            cmd += f'WaterPulses {pulse}\n'
+            remaining -= pulse
+        return cmd
+
+    def place_granule(self, plant: dict, tray: dict) -> str:
+        """Pick one fertilizer granule from the tray and drop it beside the plant."""
+        index = plant['identifiers']['index']
+        tray_x = tray['position']['x']
+        tray_y = tray['position']['y']
+        tray_z = tray['position']['z']
+        # Dropped on the exclusion radius rather than on the stem, so the granule does not sit
+        # against the plant
+        drop_x = plant['position']['x'] + plant['plant_details']['plant_radius']
+        drop_y = plant['position']['y']
+        drop_z = ((-1.0) * self.map_instance['map_reference']['z_len']
+                  + self.soil_probe['granule_drop_z_offset'])
+
+        cmd = f'CC_N_{index}\n'
+        cmd += f'{tray_x} {tray_y} {0.0}\n'
+        cmd += f'{tray_x} {tray_y} {tray_z + self.safe_z_increment_}\n'
+        cmd += f'DC_N_{index}\n'
+        cmd += 'Vacuum 1\n'
+        cmd += f'CC_N_{index}\n'
+        cmd += f'{tray_x} {tray_y} {tray_z}\n'
+        cmd += f'{tray_x} {tray_y} {tray_z + self.safe_z_increment_}\n'
+        cmd += f'{tray_x} {tray_y} {0.0}\n'
+        cmd += f'{drop_x} {drop_y} {0.0}\n'
+        cmd += f'{drop_x} {drop_y} {drop_z}\n'
+        cmd += f'DC_N_{index}\n'
+        cmd += 'Vacuum 0\n'
+        cmd += f'CC_N_{index}\n'
+        cmd += f'{drop_x} {drop_y} {0.0}\n'
+        return cmd
+
+    def tool_sequences(self, tool_name: str) -> tuple[str, str]:
+        """
+        Return the (mount, unmount) sequences for the tool with the given name.
+
+        Both are empty when the map has no such tool, in which case the tool is assumed to be
+        mounted already.
+        """
+        tools = self.map_instance['map_reference']['tools'] or {}
+        for slot, tool in tools.items():
+            if tool and str(tool.get('name', '')).lower() == tool_name.lower():
+                details = ToolDetails(x_pos=tool['position']['x'],
+                                      y_pos=tool['position']['y'],
+                                      z_pos=tool['position']['z'],
+                                      z_safe_inc=self.safe_z_increment_,
+                                      release_dir=tool['release_dir'])
+                mount = self.tool_exchanger.mount_tool(details)
+                unmount = self.tool_exchanger.unmount_tool(details)
+                if 'FAILED' in (mount, unmount):
+                    self.get_logger().warn(f"Tool '{tool_name}' ({slot}) has invalid details")
+                    return '', ''
+                return mount + '\n', unmount + '\n'
+        self.get_logger().warn(f"No tool named '{tool_name}' in the map, assuming it is "
+                               'already mounted')
+        return '', ''
+
+    def list_plants(self) -> str:
+        """Return every plant as YAML, for the crop controllers."""
+        return yaml.safe_dump({'plants': self.map_instance['plant_details']['plants'] or {}},
+                              default_flow_style=False)
+
+    def set_npk_reading(self, fields: list) -> str:
+        """
+        Store an NPK probe reading on a plant.
+
+        Args:
+            fields: index, moisture %, soil temperature C, EC uS/cm, pH, N, P, K (mg/kg)
+        """
+        try:
+            index = int(fields[0])
+            values = [float(v) for v in fields[1:8]]
+        except (ValueError, IndexError):
+            self.get_logger().warn(f'Malformed NPK reading {fields}')
+            return 'FAILED'
+
+        plants = self.map_instance['plant_details']['plants'] or {}
+        if index not in plants:
+            self.get_logger().warn(f"Couldn't find plant with index '{index}' to "
+                                   'add NPK reading to')
+            return 'FAILED'
+
+        keys = ('moisture_pct', 'soil_temp_c', 'ec_us_cm', 'ph', 'n', 'p', 'k')
+        soil = dict(zip(keys, values))
+        soil['stamp'] = datetime.datetime.now().isoformat(timespec='seconds')
+        plants[index]['soil'] = soil
+        self.get_logger().info(f"Plant of Index '{index}' has NPK reading: {soil}")
+        self.save_to_yaml(self.map_instance, self.config_path,
+                          self.active_map_file, create_if_empty=False)
+        return 'SUCCESS'
 
     def get_probing_location(self, plants: dict, x: float, y: float, exl_r: float,
                              max_x: float, max_y: float, index: int) -> tuple[float, float]:
@@ -536,7 +756,7 @@ class MapController(Node):
             tray_ref = copy.deepcopy(self.tray_ref)
             info = elem[3].split('\n')
             tray_ref['name'] = info[1]
-            tray_ref['seed_type'] = info[2] if not type else ''
+            tray_ref['seed_type'] = info[2]
             pos = info[3].split(' ')
             tray_ref['position']['x'] = float(pos[0])
             tray_ref['position']['y'] = float(pos[1])

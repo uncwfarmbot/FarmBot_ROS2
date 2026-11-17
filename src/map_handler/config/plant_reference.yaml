@@ -17,3 +17,12 @@ status:                 ### Plant status
     month: 0
     year: 0
   growth_stage: ''      # Current growth stage
+soil:                   ### Last NPK probe reading beside the plant (P_10 survey)
+  moisture_pct: 0.0     # Volumetric water content, %
+  soil_temp_c: 0.0      # Degrees C
+  ec_us_cm: 0.0         # Electrical conductivity, uS/cm
+  ph: 0.0
+  n: 0.0                # Nitrogen, mg/kg
+  p: 0.0                # Phosphorus, mg/kg
+  k: 0.0                # Potassium, mg/kg
+  stamp: ''             # ISO time of the reading, empty when never read

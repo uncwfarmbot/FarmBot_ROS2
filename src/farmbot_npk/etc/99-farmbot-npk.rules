@@ -1,0 +1,10 @@
+# Stable name for the NPK probe's USB-RS485 adapter: /dev/farmbot_npk
+#
+# Fill in the adapter's ids from:  udevadm info -a -n /dev/ttyUSB0 | grep -m2 -E 'idVendor|idProduct'
+# CH340 = 1a86:7523, FT232 = 0403:6001, CP210x = 10c4:ea60. Two CH340s share ids and have no
+# serial number; match the physical socket with KERNELS=="1-1.3" instead in that case.
+#
+# Install:  sudo cp 99-farmbot-npk.rules /etc/udev/rules.d/
+#           sudo udevadm control --reload-rules && sudo udevadm trigger
+# ID_MM_DEVICE_IGNORE stops ModemManager sending AT commands at the probe after plug-in.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="farmbot_npk", MODE="0660", GROUP="dialout", ENV{ID_MM_DEVICE_IGNORE}="1"

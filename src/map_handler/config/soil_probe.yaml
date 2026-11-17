@@ -1,0 +1,19 @@
+# NPK probe survey (P_10) and controller action (P_11) settings
+
+# Tool names as given to T_n_0. When the map has no tool of that name the tool is assumed to
+# be mounted already and no mount/unmount is generated.
+npk_tool_name: NPK
+seeder_tool_name: Seeder
+
+# Seed type of the tray holding the nitrogen granules (S_n_0 <type> <name> Nitrogen x y z)
+nitrogen_seed_type: Nitrogen
+
+# Z the probe is pushed to beside each plant. null uses the bottom of the map (-z_len), the
+# same depth the stock P_9 moisture check uses.
+probe_z: null
+
+# Granules are released this far above the bottom of the map (mm)
+granule_drop_z_offset: 80.0
+
+# Longest single WaterPulses line; longer waterings are split into several
+max_pulse_ms: 2000
