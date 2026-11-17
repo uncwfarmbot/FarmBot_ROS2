@@ -190,7 +190,8 @@ class FarmbotControl(Node):
                 self.plant_conf.index = int(code[1])
 
                 self.plant_manage_pub.publish(self.plant_conf)
-            case 'P_3' | 'P_4' | 'P_5' | 'P_9':  # Seed/water all plants in Planning stage
+            # Seed/water all plants in Planning stage, P_10 surveys every plant with the NPK probe
+            case 'P_3' | 'P_4' | 'P_5' | 'P_9' | 'P_10':
                 self.tools.map_cmd_client(cmd=cmd.data)
             # Seed Tray commands
             case 'S_1_0' | 'S_2_0' | 'S_3_0':  # e.g. S_1_0 0 Tray1 Radish 1198.0 332.4 -240.0

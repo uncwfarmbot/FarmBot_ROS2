@@ -11,6 +11,9 @@
 
   <exec_depend>farmbot_controllers</exec_depend>
   <exec_depend>farmbot_hardware_comm</exec_depend>
+  <exec_depend>map_handler</exec_depend>
+  <exec_depend>farmbot_npk</exec_depend>
+  <exec_depend>farmbot_agronomy</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

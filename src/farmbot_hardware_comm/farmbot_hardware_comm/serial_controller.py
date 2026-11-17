@@ -199,6 +199,11 @@ class SerialController(Node):
         axis_completion = [0.0, 0.0, 0.0]
         denominator = 0
 
+        # Positions stay empty until the Farmduino's first R82 report
+        if min(len(self.mission[key]) for key in
+               ('final_position', 'starting_position', 'current_position')) < 3:
+            return 0.0
+
         for i in range(3):
             if self.mission['final_position'][i] != self.mission['starting_position'][i]:
                 axis_completion[i] = ((self.mission['current_position'][i]

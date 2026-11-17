@@ -9,6 +9,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/GantryCommand.msg"
@@ -22,11 +23,13 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PlantManage.msg"
   "msg/MapCommand.msg"
   "msg/ImageMessage.msg"
+  "msg/SoilNpk.msg"
   "srv/LedPanelHandler.srv"
   "srv/ParameterConfig.srv"
   "srv/StringRepReq.srv"
+  "srv/ReadNpk.srv"
   "action/FarmbotComms.action"
-  DEPENDENCIES sensor_msgs
+  DEPENDENCIES sensor_msgs std_msgs
 )
 
 ament_package()
