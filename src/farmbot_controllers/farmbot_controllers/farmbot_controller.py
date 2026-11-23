@@ -69,8 +69,17 @@ class FarmbotControl(Node):
         match code[0]:
             # Electronic Stop
             case 'E':
-                self.get_logger().info('CLEARING SEQUENCE')
+                self.get_logger().warn('ESTOP: stopping the Farmduino and clearing sequence')
                 self.tools.clear_sequence()
+                self.state.estop()
+            # Electronic Stop reset
+            case 'R':
+                self.get_logger().info('ESTOP RESET')
+                self.state.reset_estop()
+            # Abort (pause) the current command; sending @ again resumes it
+            case '@':
+                self.get_logger().info('ABORT / RESUME requested')
+                self.state.abort_movement()
             # Movement Commands
             case 'M':
                 if len(code) != 4:

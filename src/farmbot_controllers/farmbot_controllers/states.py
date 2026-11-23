@@ -32,17 +32,27 @@ class State:
 
     # State handling functions
 
+    # E, @ and F09 go out as bare codes: farmbot_orchestrator only gives those exact
+    # strings priority (cancelling the running goal and jumping the queue), and
+    # serial_controller accepts them as goals. Wrapped in a state_command they would
+    # wait in the normal queue behind the move they are meant to stop.
+
     def estop(self):
         """Impose the electronic stop, turning off all the motors."""
-        self.define_state(estop=True)
+        self._send_priority('E')
 
     def abort_movement(self):
-        """Abort the current movement command."""
-        self.define_state(abort_movement=True)
+        """Abort (pause) the current movement command; sending it again resumes."""
+        self._send_priority('@')
 
     def reset_estop(self):
         """Reset the electronic stop."""
-        self.define_state(reset_estop=True)
+        self._send_priority('F09')
+
+    def _send_priority(self, code: str):
+        """Publish a priority command straight to farmbot_command."""
+        self.state.data = code
+        self.state_pub.publish(self.state)
 
     def request_end_stop(self):
         """Request the end stops."""
