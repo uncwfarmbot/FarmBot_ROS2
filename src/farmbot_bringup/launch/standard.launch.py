@@ -25,6 +25,7 @@ def generate_launch_description():
     npk = LaunchConfiguration('npk')
     agronomy = LaunchConfiguration('agronomy')
     dry_run = LaunchConfiguration('dry_run')
+    use_serial = LaunchConfiguration('serial_controller')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -64,6 +65,12 @@ def generate_launch_description():
             'dry_run',
             default_value='true',
             description='Crop controller decides and logs but sends nothing to the sequencer.'
+        ),
+        DeclareLaunchArgument(
+            'serial_controller',
+            default_value='true',
+            description='Start the Farmduino driver (serial_controller) on this machine. Set '
+                        'false when the driver runs on another host, e.g. simulated hardware.'
         ),
         Node(
             package='farmbot_npk',
@@ -186,6 +193,7 @@ def generate_launch_description():
         # Delay for 10 seconds
         TimerAction(
             period=10.0,
+            condition=IfCondition(use_serial),
             actions=[
                 # Start serial_controller after the delay
                 Node(
