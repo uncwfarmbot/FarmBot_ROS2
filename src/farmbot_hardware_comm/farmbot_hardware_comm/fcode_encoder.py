@@ -33,8 +33,8 @@ class DeviceCmdHandler:
             if int(command[1]) <= 0:
                 self.node.get_logger().warning('The time constraint/volume constraint was not set!')
             else:
-                self.uart_cmd = 'F0' + command[0] + (' T' if command[0] == '1' else ' N')
-                + command[1]
+                self.uart_cmd = ('F0' + command[0] + (' T' if command[0] == '1' else ' N')
+                                 + command[1])
 
                 self.node.get_logger().info(self.uart_cmd)
                 return self.uart_cmd
@@ -81,8 +81,8 @@ class DeviceCmdHandler:
                 elif command[2] == 'True':  # NOTE: pin_mode should be 0 for digital, 1 for analog
                     self.uart_cmd = 'F41 P' + command[4] + ' V' + command[5] + ' M' + command[8]
                 elif command[3] == 'True':  # NOTE: pin_mode should be 0 for digital, 1 for analog
-                    self.uart_cmd = 'F44 P' + command[4] + ' V' + command[5] + ' W' + command[6]
-                    + ' T' + command[7] + ' M' + command[8]
+                    self.uart_cmd = ('F44 P' + command[4] + ' V' + command[5] + ' W' + command[6]
+                                     + ' T' + command[7] + ' M' + command[8])
             # READ mode for the pin
             else:
                 self.uart_cmd = 'F42 P' + command[4] + ' M' + command[8]

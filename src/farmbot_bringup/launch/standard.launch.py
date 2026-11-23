@@ -8,9 +8,10 @@ import os
 from launch import LaunchDescription, LaunchService
 from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
@@ -21,6 +22,10 @@ def generate_launch_description():
     ws_path = LaunchConfiguration('ws_path')
     serial_port = LaunchConfiguration('serial_port')
     camera = LaunchConfiguration('camera')
+    npk = LaunchConfiguration('npk')
+    agronomy = LaunchConfiguration('agronomy')
+    dry_run = LaunchConfiguration('dry_run')
+    use_serial = LaunchConfiguration('serial_controller')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -43,6 +48,52 @@ def generate_launch_description():
             default_value='None',
             choices=['None'] + camera_choices,
             description='Select the camera type to use with the FarmBot.'
+        ),
+        DeclareLaunchArgument(
+            'npk',
+            default_value='false',
+            choices=['false', 'true', 'mock'],
+            description='Start the NPK probe node (mock: synthetic readings, no probe needed).'
+        ),
+        DeclareLaunchArgument(
+            'agronomy',
+            default_value='none',
+            choices=['none', 'fixed', 'threshold', 'fao56', 'rl'],
+            description='Start the crop controller with this strategy.'
+        ),
+        DeclareLaunchArgument(
+            'dry_run',
+            default_value='true',
+            description='Crop controller decides and logs but sends nothing to the sequencer.'
+        ),
+        DeclareLaunchArgument(
+            'serial_controller',
+            default_value='true',
+            description='Start the Farmduino driver (serial_controller) on this machine. Set '
+                        'false when the driver runs on another host, e.g. simulated hardware.'
+        ),
+        Node(
+            package='farmbot_npk',
+            executable='npk_node',
+            name='npk_probe',
+            output='screen',
+            parameters=[
+                PathJoinSubstitution([FindPackageShare('farmbot_npk'), 'config', 'npk.yaml']),
+                {'mock': PythonExpression(["'", npk, "' == 'mock'"])},
+            ],
+            condition=IfCondition(PythonExpression(["'", npk, "' != 'false'"]))
+        ),
+        Node(
+            package='farmbot_agronomy',
+            executable='crop_controller',
+            name='crop_controller',
+            output='screen',
+            parameters=[
+                {'strategy': agronomy},
+                {'dry_run': PythonExpression(["'", dry_run, "'.lower() == 'true'"])},
+                {'data_dir': PathJoinSubstitution([ws_path, 'agronomy'])},
+            ],
+            condition=IfCondition(PythonExpression(["'", agronomy, "' != 'none'"]))
         ),
         Node(
             package='farmbot_controllers',
@@ -142,6 +193,7 @@ def generate_launch_description():
         # Delay for 10 seconds
         TimerAction(
             period=10.0,
+            condition=IfCondition(use_serial),
             actions=[
                 # Start serial_controller after the delay
                 Node(

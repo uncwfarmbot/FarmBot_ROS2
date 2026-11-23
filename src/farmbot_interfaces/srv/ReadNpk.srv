@@ -1,0 +1,7 @@
+# Power the NPK probe through Peripheral 4, let it settle, read it, and power it off again.
+# Blocks for the warm-up plus the reads, so 20+ s is normal: call it asynchronously.
+int64 plant_index           # stored in the reading; -1 for an ad hoc read
+float32 warmup_s            # 0 uses the node's configured warm-up
+---
+bool success
+SoilNpk reading

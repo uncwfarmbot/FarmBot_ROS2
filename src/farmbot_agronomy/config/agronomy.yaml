@@ -1,0 +1,74 @@
+# Crop controller configuration (farmbot_agronomy/crop_controller).
+# Rules and constants are those of the simulated comparison, Capstone Deliverable 5 section 4.3.
+# Everything under soil and actuation is a per-bed calibration: the defaults are placeholders
+# until measured, and dry_run stays on until they are.
+
+soil:
+  theta_fc: 0.35            # field capacity, volumetric fraction (probe moisture / 100)
+  theta_wp: 0.15            # wilting point
+  root_depth_mm: 200.0
+  plant_area_m2: 0.04       # bed area per plant
+  bulk_density_g_cm3: 1.2   # turns probe mg/kg into mg in the root zone
+
+actuation:
+  pump_ml_per_s: 20.0       # measure: run WaterPulses 10000 into a jug
+  granule_mg: 30.0          # measure: weigh 50 seeder pickups of the nitrogen granules
+  max_water_ml: 1000.0      # per plant per cycle
+  max_granules: 10          # per plant per cycle
+  min_water_ms: 200
+
+weather:
+  # Hargreaves needs the day's air Tmin/Tmax. Published on weather/air_temperature
+  # (sensor_msgs/Temperature) when a sensor exists; these are used until it does.
+  min_samples: 12
+  default_t_min: 18.0
+  default_t_max: 28.0
+
+fixed:                      # control group: the stock routine, no sensing
+  water_ml: 250.0
+  n_mg: 120.0
+  n_interval_days: 7
+
+threshold:                  # reactive rules on the current reading
+  depletion_fraction: 0.35  # water back to field capacity past 35 % of TAW
+  n_threshold_mg: 300.0     # root-zone nitrogen below this...
+  n_dose_mg: 150.0          # ...gets this dose
+  n_min_interval_days: 3    # granules dissolve slowly; don't re-dose before the probe can see it
+
+fao56:                      # predictive root-zone water balance
+  latitude_deg: 34.2        # Wilmington, NC
+  p: 0.35                   # RAW = p * TAW
+  stage_days: [20, 30, 30, 10]       # initial, development, mid, late (basil, 90-day season)
+  kc: [0.6, 1.0, 0.95]               # Kc ini, mid, end
+  rain_mm_per_day: 0.0
+  # false is the model as compared in simulation (sensor only initialises Dr). true resets Dr
+  # to the probe every cycle, which stops the open-loop balance drifting on the real bed.
+  assimilate_sensor: false
+  n_uptake_mg_per_day: [2.0, 6.0, 8.0, 4.0]  # per stage
+  n_factor: 1.2             # applies 1.2 x the estimated uptake
+  n_interval_days: 7
+
+rl:                         # PPO policy exported to ONNX
+  policy_path: ''           # e.g. ~/farmbot_data/agronomy/policy.onnx
+  season_days: 90
+  # [name, offset, scale] in EXACTLY the training environment's order: value -> (value-offset)/scale.
+  # Names available: soil_water, soil_n_mg, soil_p_mg, soil_k_mg, ph, soil_temp_c, air_temp_c,
+  # season_progress, time_of_day. Anything else comes from defaults and is reported as such.
+  observation:
+    - [soil_water, 0.0, 1.0]
+    - [soil_n_mg, 0.0, 1000.0]
+    - [soil_p_mg, 0.0, 1000.0]
+    - [soil_k_mg, 0.0, 1000.0]
+    - [ph, 0.0, 14.0]
+    - [biomass_g, 0.0, 300.0]
+    - [greenness, 0.0, 1.0]
+    - [air_temp_c, 0.0, 40.0]
+    - [soil_temp_c, 0.0, 40.0]
+    - [season_progress, 0.0, 1.0]
+  defaults:
+    biomass_g: 0.0
+    greenness: 0.7
+  action_low: -1.0
+  action_high: 1.0
+  max_water_ml: 1000.0
+  max_n_mg: 300.0
